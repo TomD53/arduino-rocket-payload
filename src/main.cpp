@@ -16,8 +16,8 @@ struct Payload
   int altitude;
   float temp;
 
-  bool digital_channel_1;
-  bool digital_channel_2;
+  unsigned int vcc;
+  unsigned int packet_id;
 };
 
 Payload payload;
@@ -109,21 +109,14 @@ void setup()
 #endif
 
   // initialize serial communication
-  // (115200 chosen because it is required for Teapot Demo output, but it's
-  // really up to you depending on your project)
   Serial.begin(9600);
   while (!Serial)
     ; // wait for Leonardo enumeration, others continue immediately
 
-  // NOTE: 8MHz or slower host processors, like the Teensy @ 3.3V or Arduino
-  // Pro Mini running at 3.3V, cannot handle this baud rate reliably due to
-  // the baud timing being too misaligned with processor ticks. You must use
-  // 38400 or slower in these cases, or use some kind of external separate
-  // crystal solution for the UART timer.
-
   // initialize device
   Serial.println(F("Initializing I2C devices..."));
   mpu.initialize();
+  mpu.setSleepEnabled(false);
   pinMode(INTERRUPT_PIN, INPUT);
 
   // verify connection
@@ -135,14 +128,13 @@ void setup()
   devStatus = mpu.dmpInitialize();
 
   // supply your own gyro offsets here, scaled for min sensitivity
-
   /*
-  mpu.setXGyroOffset(51);
-  mpu.setYGyroOffset(8);
-  mpu.setZGyroOffset(21);
-  mpu.setXAccelOffset(1150);
-  mpu.setYAccelOffset(-50);
-  mpu.setZAccelOffset(1060);
+  mpu.setXGyroOffset(106);
+  mpu.setYGyroOffset(-36);
+  mpu.setZGyroOffset(-1);
+  mpu.setXAccelOffset(-2349);
+  mpu.setYAccelOffset(475);
+  mpu.setZAccelOffset(2707);
   */
 
   // make sure it worked (returns 0 if so)
@@ -191,10 +183,38 @@ void setup()
   pinMode(LED_PIN, OUTPUT);
 }
 
+unsigned int readVcc() {
+  // https://provideyourown.com/2012/secret-arduino-voltmeter-measure-battery-voltage/
+  // Read 1.1V reference against AVcc
+  // set the reference to Vcc and the measurement to the internal 1.1V reference
+  #if defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
+    ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+  #elif defined (__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny84__)
+    ADMUX = _BV(MUX5) | _BV(MUX0);
+  #elif defined (__AVR_ATtiny25__) || defined(__AVR_ATtiny45__) || defined(__AVR_ATtiny85__)
+    ADMUX = _BV(MUX3) | _BV(MUX2);
+  #else
+    ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
+  #endif  
+
+  delay(2); // Wait for Vref to settle
+  ADCSRA |= _BV(ADSC); // Start conversion
+  while (bit_is_set(ADCSRA,ADSC)); // measuring
+
+  uint8_t low  = ADCL; // must read ADCL first - it then locks ADCH  
+  uint8_t high = ADCH; // unlocks both
+
+  unsigned int result = (high<<8) | low;
+
+  result = 1125300L / result; // Calculate Vcc (in mV); 1125300 = 1.1*1023*1000
+  return result; // Vcc in millivolts
+}
+
 long last_start_time = micros();
 int packets_sent;
 long timedelta;
 float packets_per_second;
+unsigned int packet_id;
 
 void loop()
 {
@@ -229,6 +249,9 @@ void loop()
     payload.altitude = temp_sensor.readFloatAltitudeMeters();
 
     payload.temp = temp_sensor.readTempC();
+
+    ++packet_id;
+    payload.packet_id = packet_id;
 
     // print the values to the console
     /*
@@ -265,6 +288,14 @@ void loop()
       Serial.println(packets_per_second);
       last_start_time = micros();
       packets_sent = 0;
+      
+      payload.vcc = readVcc();
+      Serial.print("Packet ID: ");
+      Serial.println(payload.packet_id);
+
+
+      Serial.print("Payload size: ");
+      Serial.println(sizeof(Payload));
 
       // blink LED to indicate activity
       blinkState = !blinkState;
